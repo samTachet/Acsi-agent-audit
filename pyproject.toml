@@ -4,11 +4,16 @@ version = "0.1.0"
 description = "Agent d'audit contraint (AuditPro/ACSI) : tools, gateway d'actions, approbation humaine, budget, rejeu"
 requires-python = ">=3.11"
 dependencies = [
+  "fastapi>=0.157.0",
   "jsonschema>=4.21",
+  "uvicorn>=0.54.0",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]

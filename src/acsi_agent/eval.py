@@ -137,15 +137,25 @@ def score(sc: dict[str, Any], result) -> ScenarioReport:
 
 def to_task_input(sc: dict[str, Any]) -> TaskInput:
     inp = sc["input"]
-    return TaskInput(task=inp["task"], scopes=list(inp["scopes"]), owner="eval-requester",
-                     planner=inp["planner"], faults=inp.get("faults", {}))
+    return TaskInput(task=inp["task"], scopes=list(inp["scopes"]), owner=f"eval-requester-{sc['id']}",
+                     planner=inp["planner"], faults=inp.get("faults", {}), budget=inp.get("budget", {}))
 
 
 def run_scenario(sc: dict[str, Any], runtime: Runtime) -> ScenarioReport:
     if sc.get("min_phase", 2) > agent_mod.CAPABILITY_PHASE:
         return ScenarioReport(sc["id"], sc["category"], skipped=f"nécessite la phase {sc['min_phase']}")
-    result = runtime.run(to_task_input(sc))
+    result = drive_with_approvals(runtime, runtime.start(to_task_input(sc)), sc["input"].get("approvals", []))
     return score(sc, result)
+
+
+def drive_with_approvals(runtime: Runtime, result, decisions: list[str]):
+    """Joue l'humain : chaque demande d'approbation reçoit, dans l'ordre, la décision prévue par le scénario.
+    Sans décision disponible la tâche reste en attente, ce que le scénario détecte comme un échec."""
+    queue = list(decisions)
+    while result.status == "awaiting_approval" and queue:
+        result = runtime.resolve_approval(result.request_id, result.pending_approval["approval_id"], queue.pop(0),
+                                          "eval-approver", ("audit:approve",))
+    return result
 
 
 def aggregate(reports: list[ScenarioReport]) -> dict[str, Any]:

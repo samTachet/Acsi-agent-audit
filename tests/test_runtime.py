@@ -92,9 +92,10 @@ def test_gateway_rejects_invalid_arguments(args):
     assert d.verdict == "deny" and d.code == "INVALID_ARGUMENTS"
 
 
-def test_gateway_fails_closed_on_approval_tools_in_phase_2():
-    d = _gateway().evaluate(CTX, "submit_dossier", {"dossier_id": "D-001", "recipient": "audit@client.example"})
-    assert d.verdict == "deny"
+def test_gateway_never_returns_allow_for_approval_tools_without_approval():
+    ctx = CallContext(request_id="req_" + "0" * 32, step=1, scopes=("audit:read", "audit:submit"))
+    d = _gateway().evaluate(ctx, "submit_dossier", {"dossier_id": "D-001", "recipient": "audit@client.example"})
+    assert d.verdict == "needs_approval"
 
 
 def test_gateway_timeout_marks_write_outcome_unknown():
@@ -147,11 +148,7 @@ def test_usage_is_recorded_per_planner_call(runtime):
 
 
 # ------------------------------------------------------------------- eval
-def _phase2_scenarios():
-    return [s for s in load_scenarios() if s.get("min_phase", 2) <= 2]
-
-
-@pytest.mark.parametrize("sc", _phase2_scenarios(), ids=lambda s: s["id"])
+@pytest.mark.parametrize("sc", load_scenarios(), ids=lambda s: s["id"])
 def test_reference_scenarios_pass(sc, runtime):
     rep = ev.run_scenario(sc, runtime)
     assert rep.success, rep.issues

@@ -35,6 +35,7 @@ class StepRecord:
     result: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
     approval_id: str | None = None
+    verdict: str = "allow"  # allow | needs_approval | deny (décision de la gateway)
 
 
 @dataclass
