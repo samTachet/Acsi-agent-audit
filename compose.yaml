@@ -1,0 +1,13 @@
+# Évaluation hermétique : aucun réseau, système de fichiers en lecture seule.
+services:
+  eval:
+    build: .
+    image: acsi-agent:${IMAGE_TAG:-dev}
+    command: ["python", "-m", "acsi_agent.eval"]
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true

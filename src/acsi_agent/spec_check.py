@@ -97,6 +97,8 @@ def check() -> list[str]:
             errs.append(f"{sid}: catégorie inconnue")
         if exp["status"] not in STATUSES:
             errs.append(f"{sid}: statut attendu inconnu")
+        if s.get("min_phase") not in {2, 3}:
+            errs.append(f"{sid}: min_phase doit valoir 2 ou 3")
         if inp["planner"]["type"] not in PLANNERS:
             errs.append(f"{sid}: planner inconnu")
         if set(inp["scopes"]) - all_scopes:
