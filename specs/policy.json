@@ -1,0 +1,75 @@
+{
+  "policy_version": "1.0.0",
+  "default": "deny",
+  "forbidden_actions": [
+    {"name": "shell_exec", "reason": "Exécution arbitraire sur l'hôte : hors périmètre de l'agent d'audit."},
+    {"name": "http_request", "reason": "Accès réseau arbitraire : exfiltration possible."},
+    {"name": "read_file", "reason": "Lecture de fichiers arbitraires : hors corpus et dossiers autorisés."},
+    {"name": "write_file", "reason": "Écriture de fichiers arbitraires."},
+    {"name": "delete_dossier", "reason": "Suppression d'un dossier d'audit : conservation et traçabilité obligatoires."},
+    {"name": "send_email_raw", "reason": "Envoi libre : seul submit_dossier, borné et approuvé, peut émettre."},
+    {"name": "modify_settings", "reason": "Modification de la configuration ou des permissions."},
+    {"name": "create_account", "reason": "Création de comptes ou d'identités."}
+  ],
+  "approval_required": [
+    {"tool": "submit_dossier", "why": "Action engageante vis-à-vis d'un tiers, non annulable."},
+    {"tool": "delete_draft", "why": "Perte définitive de contenu."}
+  ],
+  "approval": {
+    "ttl_s": 900,
+    "single_use": true,
+    "args_bound": true,
+    "require_distinct_approver": true,
+    "approver_scope": "audit:approve"
+  },
+  "argument_rules": [
+    {
+      "tool": "submit_dossier",
+      "arg": "recipient",
+      "rule": "email_domain_in",
+      "allowed_domains": ["client.example", "cabinet.example"],
+      "code": "RECIPIENT_NOT_ALLOWED"
+    }
+  ],
+  "scopes": ["audit:read", "audit:draft", "audit:submit", "audit:delete", "audit:approve"],
+  "roles": {
+    "viewer": ["audit:read"],
+    "auditor": ["audit:read", "audit:draft"],
+    "lead_auditor": ["audit:read", "audit:draft", "audit:submit", "audit:delete", "audit:approve"]
+  },
+  "default_task_scopes": ["audit:read"],
+  "budget_default": {
+    "max_steps": 12,
+    "max_tool_calls": 10,
+    "max_tokens": 20000,
+    "max_cost_usd": 0.25,
+    "max_wall_s": 60
+  },
+  "budget_on_exceed": {
+    "action": "abort",
+    "semantics": "Arrêt immédiat : l'action proposée n'est pas exécutée, les approbations en attente sont annulées, les effets déjà produits ne sont pas annulés et sont listés dans l'enregistrement final.",
+    "warn_ratio": 0.8
+  },
+  "rate_limits": {
+    "tool_calls_per_minute_per_key": 60,
+    "tasks_per_minute_per_key": 10
+  },
+  "pricing_placeholder": {
+    "note": "Valeurs de substitution pour le mock : à remplacer par la grille réelle lors du branchement d'un LLM.",
+    "in_usd_per_mtok": 3.0,
+    "out_usd_per_mtok": 15.0
+  },
+  "common_errors": [
+    {"code": "TOOL_FORBIDDEN", "kind": "denied", "when": "Tool explicitement interdit."},
+    {"code": "TOOL_NOT_ALLOWED", "kind": "denied", "when": "Tool absent de l'allowlist."},
+    {"code": "PERMISSION_DENIED", "kind": "denied", "when": "La portée de la tâche ne couvre pas la permission du tool."},
+    {"code": "RECIPIENT_NOT_ALLOWED", "kind": "denied", "when": "Destinataire hors domaines autorisés."},
+    {"code": "CALL_LIMIT_EXCEEDED", "kind": "denied", "when": "Plafond d'appels par tâche atteint pour ce tool."},
+    {"code": "RATE_LIMITED", "kind": "denied", "when": "Débit d'appels de la clé dépassé."},
+    {"code": "APPROVAL_REJECTED", "kind": "rejected", "when": "L'approbateur a refusé l'action."},
+    {"code": "APPROVAL_EXPIRED", "kind": "rejected", "when": "Approbation non obtenue avant expiration."},
+    {"code": "INVALID_ARGUMENTS", "kind": "error", "when": "Arguments non conformes au schéma d'entrée."},
+    {"code": "TIMEOUT", "kind": "error", "when": "Dépassement du délai du tool ; l'issue d'un tool en écriture est alors indéterminée."},
+    {"code": "INTERNAL_ERROR", "kind": "error", "when": "Exception non prévue dans l'implémentation du tool."}
+  ]
+}
