@@ -29,7 +29,7 @@ from .budget import Budget, Meter, Violation, check_post_planner, check_pre_plan
 from .gateway import Decision, Gateway
 from .journal import Journal
 from .planners import make_planner
-from .prompt import PROMPT_VERSION, build_prompt, estimate_tokens
+from .prompt import PROMPT_VERSION, SYSTEM_PROMPT, build_prompt, estimate_tokens
 from .ratelimit import RateLimiter
 from .specs import ToolSpec, load_policy, load_tools, specs_hash
 from .tools_impl import build_impls
@@ -78,8 +78,15 @@ class TaskResult:
 
 
 def fingerprint(planner_id: str) -> dict[str, str]:
-    """Ce qui, en changeant, impose de rejouer les scénarios de référence."""
-    return {"prompt_version": PROMPT_VERSION, "model_id": MODEL_ID, "planner_id": planner_id, "specs_hash": specs_hash()}
+    """Ce qui, en changeant, impose de rejouer les scénarios de référence : prompt, modèle, tools (specs et code)."""
+    return {
+        "prompt_version": PROMPT_VERSION,
+        "prompt_hash": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()[:16],
+        "model_id": MODEL_ID,
+        "planner_id": planner_id,
+        "specs_hash": specs_hash(),
+        "tools_code_hash": hashlib.sha256((Path(__file__).parent / "tools_impl.py").read_bytes()).hexdigest()[:16],
+    }
 
 
 def args_hash(args: dict[str, Any]) -> str:

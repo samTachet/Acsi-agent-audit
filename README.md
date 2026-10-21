@@ -1,83 +1,98 @@
 # acsi-agent
 
-Agent d'audit contraint pour AuditPro/ACSI (ADR-0003) : tools typés, gateway d'actions, approbation humaine,
-budget, journal rejouable. Une branche par phase : `phase-1-specs` → `phase-2-runtime` → `phase-3-gateway` → `phase-4-ops`.
+Agent d'audit **contraint** pour AuditPro/ACSI (ADR-0003) : tools typés, gateway d'actions, approbation humaine,
+budget, journal rejouable, déploiement avec retour arrière. Le modèle propose, la gateway décide.
 
-## Phase 1 — contrats (cette branche)
+| Branche | Tag | Contenu |
+|---|---|---|
+| `phase-1-specs` | `phase-1` | contrats des tools, politique d'actions, 18 scénarios de référence, vérificateur de cohérence |
+| `phase-2-runtime` | `phase-2` | runtime, journal chaîné, évaluation de tool correctness, mocks, Docker |
+| `phase-3-gateway` | `phase-3` | API + `request_id`, gateway complète, approbation humaine, budget, traçabilité |
+| `phase-4-ops` | `phase-4` | métriques, régression par baseline, replay, déploiement/rollback, démo |
 
-Source de vérité = fichiers JSON, vérifiés par un outil de cohérence et documentés par génération.
+`main` = état final (fast-forward de `phase-4-ops`).
 
-| Fichier | Rôle |
-|---|---|
-| `specs/tools.json` | 6 tools : objectif, entrées/sorties (JSON Schema fermé), permission, approbation, timeout, plafond, erreurs |
-| `specs/policy.json` | deny par défaut, actions interdites, approbation humaine, règles sur arguments, rôles/portées, budget, débit |
-| `scenarios/reference.json` | 18 scénarios : résultat attendu, tools attendus (arguments, résultat), refus, effets observables |
-| `docs/*.md` | générés (`python -m acsi_agent.docs_gen`), contrôlés contre la dérive par les tests |
+## Démarrage
 
 ```bash
 uv sync
-uv run python -m acsi_agent.spec_check     # cohérence tools / politique / scénarios
-uv run python -m acsi_agent.docs_gen --check
-uv run pytest
+uv run pytest                          # 147 tests
+uv run python -m acsi_agent.eval       # scénarios de référence : tool correctness, statut, effets, coût
+uv run python -m acsi_agent.regress    # rejeu contre baselines/reference.json
+uv run python -m acsi_agent.demo       # tâche complète, replay, permissions, budget (docs/demo-transcript.md)
+cp .env.example .env && docker compose up api   # API sur 127.0.0.1:8000
+docker compose run --rm eval           # évaluation hermétique : sans réseau, FS en lecture seule
 ```
 
-Invariants vérifiés : toute action irréversible exige une approbation ; un appel refusé ne demande jamais d'approbation ;
-chaque tool est couvert par un scénario nominal, chaque tool interdit cité par un scénario de refus, et les refus
-laissent les effets à zéro.
+## Architecture
 
-## Phase 2 — runtime, journal, évaluation, mocks, Docker
-
-| Module | Rôle |
-|---|---|
-| `tools_impl.py`, `backends.py` | tools sur services **simulés** (état isolé par tâche, `FakeMailGateway` avec pannes/latence injectables) |
-| `gateway.py` | allowlist + interdits, validation JSON Schema des arguments, timeout, contrat de sortie. Les tools à approbation sont **refusés** (échec fermé) tant que la phase 3 n'existe pas |
-| `journal.py` | un fichier JSONL par `request_id`, append-only, **chaîné par hachage** (`verify` détecte toute altération) |
-| `agent.py` | boucle planner → gateway → tool ; chaque appel journalisé : tool choisi, arguments, décision gateway, résultat, erreur, latence ; tokens et coût par appel du planner |
-| `planners.py` | `rule` (modèle compétent), `scripted` (modèle trompé ou maladroit), `runaway` (boucle sans fin) |
-| `eval.py` | tool correctness (bon tool / bons paramètres / bonne issue / bon résultat) + statut final + effets observables |
-
-```bash
-uv run pytest                      # l'évaluation détecte un mauvais tool, de mauvais arguments, un appel superflu ;
-                                   # les mocks ne font aucun appel réseau (socket.connect interdit pendant l'éval)
-uv run python -m acsi_agent.eval   # scénarios de référence (en phase 2 seuls 8 sur 18 étaient exécutables)
-docker compose run --rm eval       # même évaluation, sans réseau, FS en lecture seule, utilisateur non-root
+```
+ client ──HTTP──► API (auth, rôle→portées, débit) ──► Runtime ──► Planner (mock | LLM à brancher)
+                                                         │              │ propose {tool, args} ou conclut
+                                                         ▼              ▼
+                                                 Journal JSONL ◄── GATEWAY ──► Tool ──► Services simulés
+                                              (append-only, chaîné)  interdits/allowlist · permission · schéma ·
+                                                         ▲           règles d'arguments · plafond/tool · débit ·
+                                                         │           APPROBATION HUMAINE · timeout · contrat de sortie
+                                       état = rejeu du journal       + BUDGET (étapes, appels, tokens, coût, temps)
 ```
 
-Limites assumées : `classify_excerpt` est un substitut à mots-clés (à rebrancher sur `classify()` de acsi-audit-classify) ;
-le planner est déterministe, donc ces tests valident la **plomberie et la gateway**, pas la qualité d'un LLM ;
-tokens = estimation (~4 caractères/token), prix = valeurs de substitution (`policy.pricing_placeholder`).
+L'état d'une tâche est **toujours reconstruit depuis son journal** : une tâche en attente d'approbation est un journal qui s'arrête sur
+`approval_requested` ; le replay et les métriques lisent la même source.
 
-## Phase 3 — API, gateway d'actions, approbation humaine, budget (cette branche)
+## Tools (détail : `docs/tools.md`)
 
-**API** (`uvicorn acsi_agent.api:create_app --factory`, clés dans `ACSI_API_KEYS`, voir `.env.example`)
+| Tool | Effet | Permission | Approbation |
+|---|---|---|---|
+| `classify_excerpt`, `lookup_article`, `list_nonconformities` | lecture | `audit:read` | non |
+| `draft_finding` | écriture réversible (brouillon interne) | `audit:draft` | non |
+| `delete_draft` | irréversible local | `audit:delete` | **oui** |
+| `submit_dossier` | irréversible externe (envoi à un tiers) | `audit:submit` | **oui** |
 
-| Route | Rôle |
-|---|---|
-| `POST /tasks` | crée une tâche → `request_id` (`req_<32 hex>`), exécute jusqu'à la fin ou à la 1re demande d'approbation (201) |
-| `GET /tasks/{id}` | état, étapes, métriques, approbation en attente (visible du propriétaire ou d'un approbateur, sinon 404) |
-| `GET /tasks/{id}/trajectory` | événements du journal + vérification de la chaîne de hachage |
-| `POST /tasks/{id}/approvals/{approval_id}` | `{"decision": "approve"\|"reject"}` ; l'approbateur ne fournit **jamais** d'arguments |
+Interdits (jamais exécutés) : `shell_exec`, `http_request`, `read_file`, `write_file`, `delete_dossier`, `send_email_raw`, `modify_settings`, `create_account`.
+Tout le reste est refusé par défaut. Politique complète : `docs/policy.md`.
 
-**Gateway** (`gateway.py`), ordre des contrôles : interdits/allowlist → permission (portée de la tâche) → schéma des arguments →
-règle sur les arguments (domaine du destinataire, adresse unique) → plafond d'appels par tool et par tâche → débit par clé →
-approbation. Deny par défaut. Un appel refusé ne sollicite jamais d'humain. Timeout et contrat de sortie à l'exécution.
+## Garanties et leur test
 
-**Approbation humaine** : exigée pour `submit_dossier` et `delete_draft`. Liée aux arguments exacts (hachage), à usage unique,
-expire (900 s), réservée à `audit:approve`, approbateur ≠ demandeur, journal vérifié avant exécution, gateway réévaluée après approbation.
+| Garantie | Où | Test |
+|---|---|---|
+| Aucun appel hors gateway ; deny par défaut | `gateway.py` | `test_gateway_policy.py` |
+| Permissions minimales (tâche en lecture seule par défaut, le rôle plafonne les portées) | `api.py`, `gateway.py` | `test_api.py`, mutation « sans contrôle de permission » |
+| Un humain avant toute action irréversible, jamais sollicité pour un appel refusé | `agent.py` | `test_budget_approvals.py` |
+| Approbation liée aux arguments, à usage unique, expirante, approbateur ≠ demandeur, journal intègre | `agent.py` | auto-approbation, rejeu d'approbation, expiration, journal altéré, redémarrage |
+| Destinataire borné (un seul `@`, domaines autorisés) | `gateway.py` | `test_recipient_outside_allowlist…` (7 cas piégés) |
+| Budget dur, plafonds réductibles jamais relevables, action proposée non exécutée | `budget.py` | une dimension par test + mutations |
+| Chaque tool call tracé (tool, arguments, décision, résultat, erreur, latence) ; tokens/coût par appel de planner | `journal.py` | `test_every_tool_call_is_journaled…` |
+| Les scénarios ont des dents : retirer un contrôle fait échouer un scénario | `eval.py` | 3 tests de mutation |
+| Les mocks ne touchent pas au réseau | `backends.py` | `socket.connect` interdit pendant l'éval |
 
-**Budget** par tâche (`policy.budget_default`, réductible par l'appelant, jamais augmentable) : étapes, appels de tools, tokens,
-coût, temps actif. Dépassement = **abort** : l'action proposée n'est pas exécutée, les effets déjà produits sont listés, pas annulés.
-Le dépassement maximal est borné par un appel de planner (tokens/coût ne sont connus qu'après).
+## Évaluation et régression
 
-**Traçabilité** : par appel du planner — tokens, coût, latence ; par tool — décision de gateway (contrôles passés), latence, résultat/erreur ;
-par tâche — étapes, appels exécutés, erreurs, refus, attente humaine (exclue du temps actif).
+`eval.py` mesure, par scénario : **tool correct** (bon tool, bons arguments, bonne issue — ok / refus / erreur / approbation —, bon résultat),
+statut final, **effets observables** (mails, brouillons : un refus doit laisser 0 effet). Agrégats : succès de tâche, sélection / arguments / issue / résultat,
+étapes, **récupération après erreur** et **échecs propres**, coût par tâche.
+`regress.py` compare à `baselines/reference.json` : succès, statut, **trajectoire**, étapes, tokens, coût ; l'**empreinte** (texte du prompt, modèle, planner, specs,
+code des tools) doit correspondre, sinon code 2 jusqu'à régénération explicite (`--update-baseline`, jamais si un scénario échoue) et relecture du diff.
+Déclencheurs : hook `pre-push` (`git config core.hooksPath scripts/hooks`), CI, portes de `deploy.sh`.
 
-```bash
-uv run pytest        # + tests adverses : auto-approbation, rejeu d'approbation, expiration, journal altéré, redémarrage,
-                     #   destinataires piégés, budget par dimension, mutations (retirer un contrôle fait échouer un scénario)
-docker compose up api
-```
+## Replay
 
-Limites assumées : services simulés en mémoire (une tâche en attente d'approbation ne survit pas à un redémarrage : elle est clôturée
-sans exécution) ; un timeout ne tue pas le thread du tool (issue d'une écriture « indéterminée », signalée) ; le planner est déterministe,
-la garantie de sécurité vient de la gateway, pas du modèle ; la chaîne de hachage prouve l'intégrité, pas l'auteur (pas de signature).
+`GET /tasks/{id}/timeline` (lecture humaine) et `GET /tasks/{id}/replay` : ré-exécution **isolée** (journal temporaire, services neufs) avec les sorties du planner
+et les approbations enregistrées, passées dans la **vraie** gateway. `identical: false` signale que politique, tool ou données ont changé depuis l'enregistrement.
+Les 18 scénarios se rejouent à l'identique. Un journal altéré, une tâche coupée par un redémarrage ou un dépassement de temps ne sont pas rejoués.
+
+## Déploiement
+
+`scripts/deploy.sh` / `scripts/rollback.sh`, voir `docs/DEPLOY.md`.
+
+## Limites assumées
+
+- **Le planner est un mock déterministe.** Les tests valident la plomberie, la gateway, l'approbation, le budget et le replay ; ils ne mesurent pas la qualité d'un LLM.
+  Brancher un modèle = implémenter `Planner.plan` (recette : `prompt.build_prompt`) ; les scénarios `scripted` et `runaway` simulent un modèle trompé ou emballé.
+- `classify_excerpt` est un substitut à mots-clés au contrat de `classify()` de acsi-audit-classify (à rebrancher). Les résumés d'articles du corpus sont des
+  paraphrases internes, **pas du texte juridique** : à vérifier sur EUR-Lex avant tout usage de fond.
+- Tokens estimés (~4 caractères/token) ; prix de substitution (`policy.pricing_placeholder`). Le « coût » mesuré est donc relatif, pas une facture.
+- Services simulés en mémoire : une tâche en attente d'approbation ne survit pas à un redémarrage (elle est clôturée **sans exécuter** l'action).
+- Un timeout ne tue pas le thread du tool : l'issue d'une écriture est alors signalée « indéterminée ».
+- Le journal est chaîné par hachage (intégrité) mais non signé (pas d'authenticité). Les arguments y figurent en clair (adresse de destinataire comprise) : politique de rétention à définir.
+- Image Docker et CI non exécutées dans l'environnement de livraison (voir `docs/DEPLOY.md`).

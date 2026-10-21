@@ -163,8 +163,18 @@ def aggregate(reports: list[ScenarioReport]) -> dict[str, Any]:
     n = len(ran) or 1
     pairs = [c for r in ran for c in r.calls]
     matched = [c for c in pairs if c.matched]
+    with_err = [r for r in ran if r.metrics.get("errors", 0) > 0]
+    recoverable = [r for r in with_err if r.expected_status == "completed"]
+    must_fail = [r for r in with_err if r.expected_status == "failed"]
     return {
         "scenarios_run": len(ran), "scenarios_skipped": len(reports) - len(ran),
+        "tasks_with_errors": len(with_err),
+        # erreur récupérable (le scénario attend « completed ») : la tâche s'est-elle bien terminée ?
+        "error_recovery_rate": (sum(r.actual_status == "completed" for r in recoverable) / len(recoverable)) if recoverable else None,
+        # erreur non récupérable (le scénario attend « failed ») : échec propre, sans appels superflus ni effets ?
+        "clean_failure_rate": (sum(r.success for r in must_fail) / len(must_fail)) if must_fail else None,
+        "mean_errors": sum(r.metrics.get("errors", 0) for r in ran) / n,
+        "total_cost_usd": sum(r.metrics.get("cost_usd", 0) for r in ran),
         "task_success_rate": sum(r.success for r in ran) / n,
         "tool_correct_rate": sum(r.tool_correct for r in ran) / n,
         "tool_selection_accuracy": len(matched) / (len(pairs) or 1),
@@ -199,6 +209,9 @@ def render(reports: list[ScenarioReport], agg: dict[str, Any]) -> str:
     lines.append(f"succès de tâche {agg['task_success_rate']:.0%} | tool correct {agg['tool_correct_rate']:.0%} | "
                  f"sélection {agg['tool_selection_accuracy']:.0%} | arguments {agg['argument_accuracy']:.0%} | "
                  f"issue {agg['outcome_accuracy']:.0%} | résultat {agg['result_accuracy']:.0%}")
+    rec = "n/a" if agg["error_recovery_rate"] is None else f"{agg['error_recovery_rate']:.0%}"
+    cln = "n/a" if agg["clean_failure_rate"] is None else f"{agg['clean_failure_rate']:.0%}"
+    lines.append(f"récupération après erreur {rec} | échecs propres {cln} | {agg['tasks_with_errors']} tâche(s) avec erreur")
     lines.append(f"étapes moy. {agg['mean_steps']:.1f} | coût moy. {agg['mean_cost_usd']:.5f} $ | max {agg['max_cost_usd']:.5f} $ "
                  f"| {agg['scenarios_run']} exécutés, {agg['scenarios_skipped']} ignorés")
     return "\n".join(lines)

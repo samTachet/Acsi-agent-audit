@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
 from .agent import ApprovalError, Runtime, TaskInput, fingerprint
+from . import metrics, replay
 from .ratelimit import RateLimiter
 from .specs import load_policy
 from .types import REQUEST_ID_RE
@@ -111,6 +112,22 @@ def create_app(runtime: Runtime | None = None, api_keys: dict[str, dict[str, str
         res = visible(p, request_id)
         ok, why = runtime.journal.verify(request_id)
         return {"request_id": request_id, "chain_ok": ok, "chain_detail": why, "events": res.events}
+
+    @app.get("/tasks/{request_id}/timeline", response_class=PlainTextResponse)
+    def timeline(request_id: str, p: Principal = Depends(principal)):
+        return replay.render_timeline(visible(p, request_id).events)
+
+    @app.get("/tasks/{request_id}/replay")
+    def replay_task(request_id: str, p: Principal = Depends(principal)):
+        """Ré-exécute la trajectoire enregistrée dans un runtime isolé et signale toute divergence de comportement."""
+        visible(p, request_id)
+        return replay.reexecute(runtime.journal, request_id, runtime.tools, runtime.policy)
+
+    @app.get("/metrics")
+    def get_metrics(p: Principal = Depends(principal)):
+        if approver_scope not in p.scopes:
+            raise _err(403, "FORBIDDEN", f"la portée `{approver_scope}` est requise")
+        return metrics.aggregate_journals(runtime.journal)
 
     @app.post("/tasks/{request_id}/approvals/{approval_id}")
     def approve(request_id: str, approval_id: str, body: ApprovalRequest, p: Principal = Depends(principal)):

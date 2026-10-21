@@ -1,0 +1,15 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - run: uv run python -m acsi_agent.spec_check
+      - run: uv run python -m acsi_agent.docs_gen --check
+      - run: uv run pytest -q
+      # Rejeu des scénarios de référence : échoue si le comportement ou l'empreinte (prompt, modèle, tools) a changé
+      - run: uv run python -m acsi_agent.regress
+      - run: uv run python -m acsi_agent.demo --out /tmp/demo.md
