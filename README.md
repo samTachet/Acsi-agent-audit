@@ -24,6 +24,8 @@ cp .env.example .env && docker compose up api   # API sur 127.0.0.1:8000
 docker compose run --rm eval           # évaluation hermétique : sans réseau, FS en lecture seule
 ```
 
+![Résultat de `docker compose run --rm eval`](docs/eval-run.png)
+
 ## Architecture
 
 ```
